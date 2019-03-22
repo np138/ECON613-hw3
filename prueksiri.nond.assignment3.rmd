@@ -1,0 +1,442 @@
+---
+title: "Assignment 3"
+author: "Nond Prueksiri"
+output: pdf_document
+---
+Estimated run time: 5 minutes
+
+## Data Preparation
+```{r data,warning=FALSE, message=FALSE}
+rm(list=ls())
+library(foreign)
+library(weights)
+library(ggplot2)
+library(data.table)
+library(dummies)
+library(bayesm)
+library(dplyr)
+
+data(margarine)
+dfdemo <- as.data.frame(margarine$demos)
+dfprod <- as.data.frame(margarine$choicePrice)
+```
+
+# Excercise 1
+## Average and dispersion in product characteristics
+```{r 1A}
+
+# Packaging
+stick <- list(dfprod$PPk_Stk, dfprod$PBB_Stk, dfprod$PFl_Stk, 
+              dfprod$PHse_Stk, dfprod$PGen_Stk, dfprod$PImp_Stk)
+tub   <- list(dfprod$PSS_Tub, dfprod$PPk_Tub, dfprod$PFl_Tub, dfprod$PHse_Tub)
+
+# Brands
+parkay        <-list(dfprod$PPk_Stk, dfprod$PPk_Tub)
+bluebonnett   <- list(dfprod$PBB_Stk)
+fleischmanns  <- list(dfprod$PFl_Stk, dfprod$PFl_Tub)
+house         <- list(dfprod$PHse_Stk, dfprod$PHse_Tub)
+generic       <- list(dfprod$PGen_Stk)
+imperial      <- list(dfprod$PImp_Stk)
+shedspread    <- list(dfprod$PSS_Tub)
+
+ans_1a <- round(colMeans(dfprod), digits = 4)
+ans_1a <- cbind(ans_1a, round(sapply(dfprod, sd),digits = 4 ))
+ans_1a <- ans_1a[3:12, ]
+colnames(ans_1a) <-  c("average", "dispersion (SD)")
+ans_1a
+```
+
+## Market share in product and in product characteristics
+```{r 1B}
+
+dfprod$sales <-  ifelse(dfprod$choice == 1, dfprod$PPk_Stk,
+                 ifelse(dfprod$choice == 2, dfprod$PBB_Stk,
+                 ifelse(dfprod$choice == 3, dfprod$PFl_Stk,
+                 ifelse(dfprod$choice == 4, dfprod$PHse_Stk,
+                 ifelse(dfprod$choice == 5, dfprod$PGen_Stk,
+                 ifelse(dfprod$choice == 6, dfprod$PImp_Stk,
+                 ifelse(dfprod$choice == 7, dfprod$PSS_Tub,
+                 ifelse(dfprod$choice == 8, dfprod$PPk_Tub,
+                 ifelse(dfprod$choice == 9, dfprod$PFl_Tub,
+                        dfprod$PHse_Tub)
+                 ))))))))
+
+pk_stk <- sum(dfprod$sales[dfprod$choice == 1])*100 / sum(dfprod$sales)
+share <- pk_stk
+share <- cbind(share,sum(dfprod$sales[dfprod$choice == 2])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 3])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 4])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 5])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 6])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 7])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 8])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 9])*100 / sum(dfprod$sales),
+               sum(dfprod$sales[dfprod$choice == 10])*100 / sum(dfprod$sales)
+                )
+sum(share)               
+colnames(share) <- c("pk_stk", "bb_stk", "fl_stk", "hse_stk", "gen_stk", 
+                     "imp_stk", "ss_tub", "pk_tub", "fl_tub" ,"hse_tub")
+
+share
+```
+
+* By type of packaging
+``` {r 1BC}
+share_type <- c(sum(share[,1:6]), sum(share[,7:10]))
+share_type <- rbind(c("stick", "tub") , share_type)
+
+share_type
+
+```
+
+## Mapping Data
+```{r 1C}
+dfmar <- merge(dfprod, dfdemo, by = "hhid", all.x = TRUE)  
+
+```
+
+#  Exercise 2
+
+## Model specification for effect of price on demand
+
+Since, prices of product (denoted matrix Z) vary among choices i - 1,2,...,10
+therefore, I propose that conditional logit model is to be used here. Therefore, the probability
+function can be written as 
+$$ p_{ij} = \frac{exp(Z_{ij} \gamma )}{ \sum_{l=1}^{m} exp(Z_{il} \gamma )}\ $$ for j = 1, ..., m
+
+where gamma  is a coefficient corresponding to prices
+However, we want to include the constant term for each choice (denoted by alpha_j), this conditional logit turns to be mixed logit
+$$p_{ij} = \frac{exp(Z_{ij} \gamma + d_{ij}\alpha_j )}{\sum_{l=1}^{m} exp(Z_{il} \gamma + d_{il}\alpha_l )}\ $$ for j = 1, ..., m
+
+Where d_ij = 1  for family i choosing choice j and alpha_j  is a constant coefficient 
+corresponding to choice j
+Note that we use choice 1 for the baseline that is alpha_1 = 0 
+
+## Likelihood Function for the model
+* Create matrix of prices Z (N X 10) and indicator matrix D (denoted 1 if the choice is selected, otherwise 0)
+```{r 2.1}
+Z <- as.matrix(dfmar[,3:12])
+D <- dummy("choice", data = dfmar, sep="")
+```
+
+* The negative log-likelihood function
+The function is a function of coeff where the vector coeff is
+
+$$\begin{bmatrix} 
+\gamma  \\
+0 \\
+\alpha_2 \\
+... \\
+\alpha_{10}
+\end{bmatrix} $$
+
+## The function operates as follows;
+* Assign gamma and alpha into the vector of coefficients to be estimated 
+* Multiply each price with gamma (scalar) 
+* Calculate general exponents of $$ exp(Z_{ij} \gamma + d_{ij}\alpha_j) $$ 
+* Construct a matrix of exponents over the sum of exponents by row 
+* Use indicator matrix D  to limit the numerator for only the choice choosen
+* Create the likelihood function by summing log of all rows 
+* Return negative likelihood function 
+
+```{r 2.2}
+
+llclogit <- function(coeff) {
+  gamma <- coeff[1]
+  alpha <- as.matrix(coeff[2:11])
+  alpha[1] <- 0
+  ZG <- Z*gamma
+  expZBG <- exp(ZG + (matrix(1,nrow(dfmar)) %*% t(alpha)))
+  plogit <- t(apply(expZBG, 1, function(x) x / sum(x)))
+  plogit <- plogit*D
+  ll <- sum(log(rowSums(plogit)))
+  return(-ll)
+}
+
+```
+
+* Optimization 
+Package nlm is used here to find the vector of coefficients "coeff" with intitial value of 0 for all of the coefficients 
+
+```{r 2.3, warning=FALSE}
+gamma <- matrix(0,nrow = 11)
+
+clogit <- nlm(llclogit, gamma)
+```
+
+## Report and Interpret the coefficient corresponding prices
+The following report the coefficients.
+```{r 2.4}
+clogit_coeff <- as.matrix(clogit$estimate)
+row.names(clogit_coeff) <- c("Price", "Choice 1" , "Choice 2", 
+                             "Choice 3", "Choice 4","Choice 5", 
+                             "Choice 6", "Choice 7", "Choice 8", 
+                             "Choice 9", "Choice 10")
+clogit_coeff <- round(clogit_coeff, digits = 4)
+clogit_coeff
+```
+The coefficient on price is -6.6566. At this stage, we can only say that the higher the price
+of product the less probability that such product will be choosen. However, we cannot interpret 
+anything about the magnitude of probability decrease as we need marginal effects to do so.
+
+#  Exercise 3
+
+## Model specification for effect of family income on demand
+
+Since, family income varies among individuals but not the alternatives 
+therefore, I propose that multinomial logit model is to be used here. Therefore, the probability
+function can be written as 
+$$p_{ij} = \frac{exp(X_{i} \beta_j)}{\sum_{l=1}^{m} exp(X_{i} \beta_l)}\ $$ for j = 1, ..., m
+
+Where matrix X is a 7 X N matrix with each column contains the characteristic of each household including income
+and the last column is 1 which is intended for the constant term.
+
+## Likelihood Function for the model
+* Create matrix of prices X (N X 7) and indicator matrix D (denoted 1 if the choice is selected, otherwise 0)
+
+```{r 3.1}
+X <- as.matrix(cbind(matrix(1,nrow(dfmar)), dfmar$Income, 
+                     dfmar$Fs3_4, dfmar$Fs5.,dfmar$college, 
+                     dfmar$whtcollar, dfmar$retired))
+```
+
+* The negative log-likelihood function
+The function is a function of coeff where the vector matrix (7 X 10) is
+
+$$\begin{bmatrix} 
+\beta_{1,1}  & \beta_{1,2} & ... & \beta_{1,10} \\
+\beta_{2,1} & \beta_{2,2} & ... & \beta_{2,10}\\
+... & ... & ... &... \\
+\beta_{7,1} & \beta_{7,1} & ... & \beta_{7,10}
+\end{bmatrix} $$
+
+where beta_k,j corresponds k characteristic of the family for choice j
+and where j = 1,2, ... , m choices and k = 1,2, ... , K characteristics
+
+## The function operates as follows;
+* Assign beta as a matrix of coefficients as structured above 
+* Set the first choice as baseline by restricting beta_1,k = 0
+* Calculate general exponents of $$ exp(X_{i} \beta_j) $$ 
+* Construct a matrix of exponents over the sum of exponents by row 
+* Use indicator matrix D  to limit the numerator for only the choice choosen
+* Create the likelihood function by summing log of all rows 
+* Return negative likelihood function 
+
+``` {r 3.2}
+llmlogit <- function(coeff) {
+  beta <- matrix(coeff, nrow = 7, byrow = TRUE)
+  beta[,1] <- 0
+  expXB <- exp(X %*% beta)
+  plogit <- t(apply(expXB, 1, function(x) x/ sum(x)))
+  plogit <- plogit*D
+  ll <- sum(log(rowSums(plogit)))
+  return(-ll)
+}
+
+beta <- matrix(0,70)
+```
+
+* Optimization 
+Package nlm is used here to find the vector of coefficients "coeff" with intitial value of 0 for all of the coefficients 
+```{r 3.3, warning=FALSE}
+beta <- matrix(0, nrow = 70)
+mlogit <- nlm(llmlogit,beta)
+```
+
+## Report and Interpret the coefficient corresponding prices
+The following report the coefficients, since choice 1 is the baseline, thus,
+all coefficients are set to 0 and will not be shown
+```{r 3.4}
+mlogit_coeff <- matrix(mlogit$estimate, nrow = 7, byrow = TRUE)
+mlogit_coeff <- round(mlogit_coeff, digits=4)
+colnames(mlogit_coeff) <- c("Choice 1" , "Choice 2", "Choice 3", 
+                            "Choice 4" , "Choice 5", "Choice 6", 
+                            "Choice 7", "Choice 8", "Choice 9", 
+                            "Choice 10")
+row.names(mlogit_coeff) <- c("Constant", "Income", "Family Size 3-4", 
+                             "Family Size 5", "college", "white collar", 
+                             "retired" )
+mlogit_coeff[,2:10]
+
+```
+Interpretation: for a family is more likely to buy product of choice 3, 4, 6, 8 and 9 than to buy choice 1 given a family 
+earn more income while less likely to buy product of choice 2, 5, 7 and 10 than to buy choice 1
+
+# Exercise 4 Marginal Effects
+
+## The first model (Conditional Logit) 
+
+* Assign the matrix of coefficients again
+```{r 4.1}
+gamma <- clogit_coeff[1,]
+alpha <- c(0,clogit_coeff[2:10,])
+```
+
+* Create individual likelihood function
+```{r 4.2}
+ZG <- Z* gamma
+expZG <- exp(ZG + (matrix(1,nrow(ZG)) %*% t(alpha)))
+pclogit <- t(apply(expZG, 1, function(x) x / sum(x)))
+```
+
+* Calculate 
+$$ sum_{ij} p_{ij} * \gamma $$
+``` {r 4.3}
+gammap <- gamma * colSums(pclogit) 
+```
+
+* Calculate
+$$ \sum_{ijk} (p_{ij} * \gamma) * \delta_{ijk} * \alpha) $$ 
+
+```{r 4.35}
+## Write the row repclication function
+rowrep<-function(x,n){
+  matrix(rep(x,each=n),nrow=n)
+}
+## Replicate the row to make matrix conform
+gammap2 <- rowrep(gammap,n=10) * diag(10)
+gammap2 <- alpha * (t(pclogit) %*% pclogit)
+```
+
+* Calculate average marginal effects
+$$ \frac{ \sum_{ijk} (p_{ij} * \gamma) * \delta_{ijk} * \alpha) - (p_{ij} * \gamma)} {N} $$
+``` {r 4.4}
+mfx_clogit <- round((gammap2 - gammap)/nrow(Z), digits = 4)
+colnames(mfx_clogit) <- c("Choice 1" , "Choice 2", "Choice 3", 
+                            "Choice 4" , "Choice 5", "Choice 6", 
+                            "Choice 7", "Choice 8", "Choice 9", 
+                            "Choice 10")
+row.names(mfx_clogit) <- c("p1", "p2" ,"p3" ,"p4" ,"p5", "p6"
+                           , "p7", "p8", "p9" , "p10")
+mfx_clogit
+```
+
+Interpretation: the matrix above represents marginal effect of price on the probability of
+a family choosing product corresponding to choice i. The diagonal value of the matrix
+is the marginal effect from its own price, for example, 0.54 represents the fact that if 
+price of product 1 "Pk_Stk" increases by $1 the probability of purchasing product 1 decreases
+by 0.5379 (decreases because the estimated coefficient is minus). The off-diagonal value of
+the matrix indicates marginal effect from its competing product price.
+
+
+## The second model (Multinomial Logit) 
+
+* Create individual likelihood function
+``` {r 4.5}
+expXB <- exp(X %*% mlogit_coeff)
+pmlogit <- t(apply(expXB, 1, function(x) x / sum(x)))
+```
+
+* Select only family income to calculate 
+$$ \beta_{j} $$
+```{r 4.55}
+beta_fam <-  rowrep(mlogit_coeff[2,], nrow(pmlogit))
+```
+
+* Calculate
+$$ \bar{\beta_{i}} $$
+```{r 4.6}
+beta_bar = pmlogit %*% t(mlogit_coeff)
+
+## Write the column repclication function
+colrep<-function(x,n){
+  matrix(rep(x,each=n), ncol=n, byrow=TRUE)
+}
+
+## Replicate the column to make matrix conform
+beta_bar <- beta_bar[,2] %>% colrep(10)
+```
+
+* Calculate
+$$ \beta_{j} - \bar{\beta_{i}} $$
+```{r 4.7}
+beta_dif <- beta_fam - beta_bar
+```
+
+* Calculate the mean of 
+$$ p_{ij} (\beta_{j} - \bar{\beta_{i}}) $$
+as the marginal effects for family income
+```{r 4.8}
+beta_dif <- pmlogit*beta_dif
+mfx_mlogit <- t(apply(beta_dif, 2, mean))
+mfx_mlogit <-round(mfx_mlogit, digits = 4)
+mfx_mlogit
+
+```
+Interpretation: for choice 1, a increase in family income by $1,000 decreases the probability 
+that the household purchases product of choice 1 by 0.0012
+
+# Exercise 5 Mixed Logit and IIA
+
+*  Write the likelihood function similar to Exercise 2
+   but with full matrix X and gamma
+```{r 5.1}
+llxlogit <- function(coeff) {
+  beta <- coeff[1]
+  gamma <- matrix(coeff[2:length(coeff)], ncol = ncol(Z), byrow = TRUE)
+  gamma[,1] <- 0
+  ZB <- Z*beta
+  XG <- X%*%gamma
+  expZBXG <- exp(ZB+XG)
+  pxlogit <- t(apply(expZBXG, 1, function(x) x / sum(x)))
+  pxlogit <- pxlogit*D
+  ll <- sum(log(rowSums(pxlogit)))
+  return(-ll)
+}
+```
+
+* Estimate the full mixed-logit model
+Note that there are 71 coefficients where 70 (gamma) are the multinomial part of the model
+(10 choices X 7 Characters) with all 7 gamma corresponding to choice 1 restricted to 0
+PLUS one beta from the conditional part of the model corresponding prices.
+``` {r 5.2, warning=FALSE}
+G <- matrix(0,71)
+xlogit <- nlm(llxlogit,G)
+```
+
+* Recover log-likelihood for the full model
+``` {r 5.2A}
+ll_f <- -llxlogit(xlogit$estimate)
+ll_f
+```
+
+* Create data set that does not include one choice
+here I omit choice 10 to estimate the alternative model
+``` {r 5.3}
+dfmar_alter <- dfmar[dfmar$choice != 10,] 
+dfmar_alter <- subset(dfmar_alter, select = -c(dfmar_alter$PPk_Stk))
+Z <- as.matrix(dfmar_alter[,2:10])
+X <- as.matrix(cbind(matrix(1,nrow(dfmar_alter)), dfmar_alter$Income, 
+                     dfmar_alter$Fs3_4, dfmar_alter$Fs5.,
+                     dfmar_alter$college, dfmar_alter$whtcollar, 
+                     dfmar_alter$retired))
+D <- dummy("choice", data = dfmar_alter, sep="")
+```
+
+* Estimate the alternative mixed-logit model
+Note that there are 64 coefficients where 63 (gamma) are the multinomial part of the model
+(10-1 choices X 7 Characters) with all 7 gamma corresponding to choice 1 restricted to 0
+PLUS one beta from the conditional part of the model corresponding prices.
+
+```{r 5.4, warning=FALSE}
+G_alt <- matrix(0,64)
+xlogit_r <- nlm(llxlogit,G_alt)
+```
+
+* Recover log-likelihood for the alternative model
+```{r 5.4a}
+ll_r <- -llxlogit(xlogit_r$estimate)
+ll_r
+```
+
+* Test for IIA
+Test for IIA using LR ratio 
+``` {r 5.5}
+MTT <- -2*(ll_f-ll_r)
+p_value <- pchisq(MTT, df=64, lower.tail = FALSE)
+p_value
+```
+
+Now that I eliminate choice 10, the largest market share, p-value is close to zero, that is
+IIA is violated. 
+
